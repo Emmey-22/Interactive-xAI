@@ -45,6 +45,29 @@ const FIELD_META = {
   glucose: { label: "Glucose", unit: "mg/dL", step: "1", min: 30, optional: true }
 };
 
+const FIELD_GROUPS = [
+  {
+    title: "Demographics",
+    description: "Basic profile values used by the screening model.",
+    fields: ["male", "age", "education"]
+  },
+  {
+    title: "Lifestyle",
+    description: "Smoking status and daily exposure indicators.",
+    fields: ["currentSmoker", "cigsPerDay"]
+  },
+  {
+    title: "Clinical History",
+    description: "Known cardiovascular and metabolic history.",
+    fields: ["BPMeds", "prevalentStroke", "prevalentHyp", "diabetes"]
+  },
+  {
+    title: "Vitals and Labs",
+    description: "Current readings and lab values for risk estimation.",
+    fields: ["totChol", "sysBP", "diaBP", "BMI", "heartRate", "glucose"]
+  }
+];
+
 const FIELD_ORDER = Object.keys(FIELD_META);
 const FEATURE_FEEDBACK_TYPES = ["irrelevant", "confusing", "relevant"];
 const WORKFLOW_ROUTES = ["case", "risk", "explanation", "feedback"];
@@ -113,40 +136,82 @@ function rawFeatureName(featureName) {
   return featureName;
 }
 
-function FeatureTable({ title, items, resolveFeatureLabel, getClinicalPrompt }) {
+function StatusBadge({ tone = "neutral", children }) {
+  return <span className={`status-badge tone-${tone}`}>{children}</span>;
+}
+
+function StatTile({ label, value, tone = "neutral" }) {
   return (
-    <div className="result-card">
-      <h3>{title}</h3>
-      {!items || items.length === 0 ? (
-        <p className="muted">No items available.</p>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Feature</th>
-              <th>Value</th>
-              <th>SHAP</th>
-              <th>Clinical prompt</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item, idx) => (
-              <tr key={`${item.feature}-${idx}`}>
-                <td>
-                  {resolveFeatureLabel ? resolveFeatureLabel(item.feature) : item.feature}
-                  {item.disputed ? " (disputed)" : ""}
-                </td>
-                <td>{String(item.value)}</td>
-                <td>{Number(item.shap).toFixed(4)}</td>
-                <td className="clinical-prompt">
-                  {getClinicalPrompt ? getClinicalPrompt(item.feature) : "Review in clinical context."}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+    <div className={`stat-tile tone-${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
+  );
+}
+
+function PatientField({ field, value, onChange }) {
+  const meta = FIELD_META[field];
+  return (
+    <label className="field-control">
+      <span className="field-label-row">
+        <span className="label-title">{meta.label}</span>
+        {meta.optional && <span className="optional-pill">Optional</span>}
+      </span>
+      <span className="label-meta">{meta.unit}</span>
+      <input
+        type="number"
+        step={meta.step || "any"}
+        min={meta.min}
+        max={meta.max}
+        value={value}
+        onChange={(e) => onChange(field, e.target.value)}
+      />
+    </label>
+  );
+}
+
+function FeatureTable({ title, subtitle, items, tone = "neutral", resolveFeatureLabel, getClinicalPrompt }) {
+  return (
+    <section className={`data-panel evidence-panel tone-${tone}`}>
+      <div className="panel-heading">
+        <div>
+          <h3>{title}</h3>
+          {subtitle && <p>{subtitle}</p>}
+        </div>
+        <StatusBadge tone={tone}>{items?.length || 0} factors</StatusBadge>
+      </div>
+      {!items || items.length === 0 ? (
+        <p className="muted empty-copy">No items available.</p>
+      ) : (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Feature</th>
+                <th>Value</th>
+                <th>SHAP</th>
+                <th>Clinical prompt</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item, idx) => (
+                <tr key={`${item.feature}-${idx}`}>
+                  <td>
+                    <strong>{resolveFeatureLabel ? resolveFeatureLabel(item.feature) : item.feature}</strong>
+                    {item.disputed && <span className="inline-flag">Disputed</span>}
+                  </td>
+                  <td>{String(item.value)}</td>
+                  <td>{Number(item.shap).toFixed(4)}</td>
+                  <td className="clinical-prompt">
+                    {getClinicalPrompt ? getClinicalPrompt(item.feature) : "Review in clinical context."}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -174,8 +239,8 @@ export default function App() {
   const [analyticsOut, setAnalyticsOut] = useState(null);
   const [topFeaturesOut, setTopFeaturesOut] = useState([]);
   const [showRawJson, setShowRawJson] = useState(false);
-  const [showExplanation, setShowExplanation] = useState(false);
   const [activeView, setActiveView] = useState(viewFromHash);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const [alertState, setAlertState] = useState({
     open: false,
     title: "",
@@ -220,6 +285,7 @@ export default function App() {
 
   function goToView(view) {
     if (!ROUTES.includes(view)) return;
+    setHeaderMenuOpen(false);
     setActiveView(view);
     if (typeof window !== "undefined" && window.location.hash !== `#/${view}`) {
       window.location.hash = `/${view}`;
@@ -240,7 +306,6 @@ export default function App() {
     setAnalyticsOut(null);
     setTopFeaturesOut([]);
     setShowRawJson(false);
-    setShowExplanation(false);
   }
 
   function enterSession(e) {
@@ -341,11 +406,9 @@ export default function App() {
 
       const caseId = data.case_id || nextCaseId;
       setActiveCaseId(caseId);
-      setShowExplanation(false);
       goToView("risk");
       setNotice(`Prediction completed for case ${caseId}. Review the risk summary before opening the explanation.`);
 
-      // Prepare the explanation after prediction, but keep it visually secondary.
       try {
         const exp = await explainPatient(patient, userId, caseId);
         setExplainOut(exp);
@@ -360,7 +423,6 @@ export default function App() {
       setBusyLabel("");
     }
   }
-
 
   async function runExplain() {
     if (!hasSession) {
@@ -381,7 +443,6 @@ export default function App() {
       const data = await explainPatient(patient, userId, caseIdForExplain);
       setExplainOut(data);
       setActiveCaseId(data.case_id || caseIdForExplain);
-      setShowExplanation(true);
       goToView("explanation");
       setNotice(`Explanation generated for case ${data.case_id || caseIdForExplain}.`);
     } catch (e) {
@@ -391,7 +452,6 @@ export default function App() {
       setBusyLabel("");
     }
   }
-
 
   async function saveFeedback() {
     if (!hasSession) {
@@ -420,7 +480,6 @@ export default function App() {
       });
       await loadPreferences();
       await loadAnalytics();
-      // Refresh explanation after feedback so the UI reflects disputed features/preferences
       if (activeCaseId) {
         try {
           const exp = await explainPatient(patient, userId, activeCaseId);
@@ -487,6 +546,7 @@ export default function App() {
       openAlert("User ID Required", "Enter a User ID before refreshing profile.");
       return;
     }
+    setHeaderMenuOpen(false);
     setBusyLabel("Refreshing profile...");
     setLoading(true);
     setError("");
@@ -519,16 +579,15 @@ export default function App() {
         />
         <section className="login-panel">
           <div className="login-brand">
-            <p className="eyebrow">Interactive Explainable AI</p>
-            <h1>Clinical Risk Screening</h1>
+            <h1>Interactive xAI System for Healthcare Risk Prediction</h1>
             <p>
-              Enter your Clinical ID to start a secure local review session for patient risk prediction,
-              explanation, and feedback.
+              Review patient risk predictions, inspect model explanations, and integrate clinician
+              feedback into the explanation workflow.
             </p>
           </div>
           <form className="login-form" onSubmit={enterSession}>
-            <label>
-              Clinical ID
+            <label className="field-control">
+              <span className="label-title">Enter clinical ID</span>
               <input
                 value={loginInput}
                 onChange={(e) => setLoginInput(e.target.value)}
@@ -536,7 +595,7 @@ export default function App() {
                 autoFocus
               />
             </label>
-            <button type="submit">Enter</button>
+            <button type="submit">Login</button>
           </form>
         </section>
       </div>
@@ -549,6 +608,7 @@ export default function App() {
     { id: "explanation", label: "Clinical Explanation", meta: hasExplanation ? "Ready for review" : "After prediction", disabled: !hasPrediction },
     { id: "feedback", label: "Clinician Feedback", meta: activeCaseId || "After prediction", disabled: !hasPrediction }
   ];
+  const statusLabel = typeof latestFlagged === "boolean" ? (latestFlagged ? "Flagged" : "Not Flagged") : "-";
 
   return (
     <div className="app-shell">
@@ -559,11 +619,46 @@ export default function App() {
         onClose={closeAlert}
       />
 
-      <aside className="app-sidebar">
-        <div className="brand-block">
-          <h1>Interactive XAI</h1>
-          <p>Clinical risk screening support</p>
+      <header className="app-topbar">
+        <div className="topbar-title">
+          <h1>Interactive xAI System for Healthcare Risk Prediction</h1>
+          <p>Welcome, {userId}.</p>
         </div>
+        <div className="topbar-actions">
+          <button className="button-ghost topbar-direct-action" onClick={refreshAll} disabled={loading}>
+            Refresh Profile
+          </button>
+          <button className="button-ghost danger-subtle topbar-direct-action" onClick={endSession} disabled={loading}>
+            End Session
+          </button>
+          <div className="topbar-menu-wrap">
+            <button
+              className="topbar-menu-button"
+              type="button"
+              aria-label="Open session actions"
+              aria-haspopup="menu"
+              aria-expanded={headerMenuOpen}
+              onClick={() => setHeaderMenuOpen((open) => !open)}
+            >
+              <span aria-hidden="true">...</span>
+            </button>
+            {headerMenuOpen && (
+              <div className="topbar-menu" role="menu">
+                <button type="button" role="menuitem" onClick={refreshAll} disabled={loading}>
+                  <span className="menu-icon" aria-hidden="true">↻</span>
+                  Refresh Profile
+                </button>
+                <button type="button" role="menuitem" onClick={endSession} disabled={loading}>
+                  <span className="menu-icon" aria-hidden="true">↪</span>
+                  End Session
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <aside className="app-sidebar">
         <nav className="app-nav" aria-label="Clinical workflow">
           {navItems.map((item, idx) => (
             <button
@@ -589,27 +684,6 @@ export default function App() {
       </aside>
 
       <div className="app-main">
-        <header className="app-topbar">
-          <div>
-            <p className="eyebrow">Interactive Explainable AI</p>
-            <h2>
-              {navItems.find((item) => item.id === activeView)?.label || "Patient Details"}
-            </h2>
-          </div>
-          <div className="topbar-actions">
-            <div className="session-banner" role="status">
-              <span>Welcome, {userId}</span>
-              <strong>Active session from Clinical ID</strong>
-            </div>
-            <button className="button-ghost" onClick={refreshAll} disabled={loading}>
-              Refresh Profile
-            </button>
-            <button className="button-ghost" onClick={endSession} disabled={loading}>
-              End Session
-            </button>
-          </div>
-        </header>
-
         <nav className="mobile-nav" aria-label="Clinical workflow shortcuts">
           {navItems.map((item) => (
             <button
@@ -625,45 +699,41 @@ export default function App() {
 
         {activeView === "case" && (
           <main className="app-page">
-            <section className="page-panel">
-              <div className="page-header">
-                <div>
-                  <p className="step-label">Step 1</p>
-                  <h2>Case Details / Patient Details</h2>
-                  <p className="muted">Enter the available screening fields, then run the risk estimate.</p>
-                </div>
-                <div className="actions">
-                  <button onClick={runPredict} disabled={loading}>
-                    Predict Risk
-                  </button>
-                  <button className="button-ghost" onClick={resetPatient} disabled={loading}>
-                    Clear Case
-                  </button>
-                </div>
+            <section className="page-intro">
+              <div>
+                <p className="step-label">Step 1</p>
+                <h2>Patient screening details</h2>
+                <p className="muted">Enter the available fields, grouped by clinical context, then run the risk estimate.</p>
               </div>
+              <div className="actions">
+                <button onClick={runPredict} disabled={loading}>
+                  {loading ? busyLabel || "Processing..." : "Predict Risk"}
+                </button>
+                <button className="button-ghost" onClick={resetPatient} disabled={loading}>
+                  Clear Case
+                </button>
+              </div>
+            </section>
 
-              <div className="patient-form-grid">
-                {FIELD_ORDER.map((field) => {
-                  const meta = FIELD_META[field];
-                  return (
-                    <label key={field}>
-                      <span className="label-title">{meta.label}</span>
-                      <span className="label-meta">
-                        {meta.unit}
-                        {meta.optional ? " | optional" : ""}
-                      </span>
-                      <input
-                        type="number"
-                        step={meta.step || "any"}
-                        min={meta.min}
-                        max={meta.max}
-                        value={patient[field]}
-                        onChange={(e) => updateField(field, e.target.value)}
-                      />
-                    </label>
-                  );
-                })}
-              </div>
+            {notice && !notice.startsWith("Welcome,") && <p className="notice">{notice}</p>}
+            {error && <p className="error">{error}</p>}
+
+            <section className="form-section-grid">
+              {FIELD_GROUPS.map((group) => (
+                <div className="data-panel field-group-panel" key={group.title}>
+                  <div className="panel-heading">
+                    <div>
+                      <h3>{group.title}</h3>
+                      <p>{group.description}</p>
+                    </div>
+                  </div>
+                  <div className="patient-form-grid">
+                    {group.fields.map((field) => (
+                      <PatientField key={field} field={field} value={patient[field]} onChange={updateField} />
+                    ))}
+                  </div>
+                </div>
+              ))}
             </section>
           </main>
         )}
@@ -671,28 +741,22 @@ export default function App() {
         {activeView === "risk" && (
           <main className="app-page">
             <section className={`risk-page tone-${tone}`}>
-              <div className="risk-ring large" aria-hidden="true" style={{ "--ring-pct": `${ringPct}%` }}>
-                <div className="risk-ring-inner">{latestRisk}</div>
+              <div className="risk-score-panel">
+                <div className="risk-ring large" aria-hidden="true" style={{ "--ring-pct": `${ringPct}%` }}>
+                  <div className="risk-ring-inner">{latestRisk}</div>
+                </div>
+                <StatusBadge tone={tone}>{statusLabel}</StatusBadge>
               </div>
               <div className="risk-content">
                 <p className="step-label">Step 2</p>
                 <h2>Risk Summary</h2>
                 <p>{loading ? busyLabel || "Processing..." : notice || "Run prediction from Patient Details."}</p>
-                <div className="summary-metrics">
-                  <span>
-                    Prediction <strong>{predictRisk}</strong>
-                  </span>
-                  <span>
-                    Status{" "}
-                    <strong>{typeof latestFlagged === "boolean" ? (latestFlagged ? "Flagged" : "Not Flagged") : "-"}</strong>
-                  </span>
-                  <span>
-                    Threshold{" "}
-                    <strong>{typeof latestThresholdValue === "number" ? latestThresholdValue.toFixed(4) : "-"}</strong>
-                  </span>
+                <div className="metric-grid">
+                  <StatTile label="Prediction" value={predictRisk} tone={tone} />
+                  <StatTile label="Threshold" value={typeof latestThresholdValue === "number" ? latestThresholdValue.toFixed(4) : "-"} />
+                  <StatTile label="Case ID" value={latestCaseId || "-"} />
+                  <StatTile label="Model Version" value={latestModelVersion || "-"} />
                 </div>
-                <p className="muted">Case ID: {latestCaseId || "-"}</p>
-                <p className="muted">Model Version: {latestModelVersion || "-"}</p>
                 {error && <p className="error">{error}</p>}
                 <div className="actions">
                   <button onClick={() => goToView("explanation")} disabled={!hasPrediction}>
@@ -709,168 +773,168 @@ export default function App() {
 
         {activeView === "explanation" && (
           <main className="app-page">
-            <section className="page-panel">
-              <div className="page-header">
-                <div>
-                  <p className="step-label">Step 3</p>
-                  <h2>Clinical Explanation</h2>
-                  <p className="muted">Inspect model drivers only when the risk estimate needs clinical review.</p>
-                </div>
-                <div className="actions">
-                  <button onClick={runExplain} disabled={loading || !hasPrediction}>
-                    Refresh Explanation
-                  </button>
-                  <button className="button-ghost" onClick={() => goToView("feedback")} disabled={!hasPrediction}>
-                    Continue to Feedback
-                  </button>
-                </div>
+            <section className="page-intro">
+              <div>
+                <p className="step-label">Step 3</p>
+                <h2>Clinical explanation</h2>
+                <p className="muted">Review the model drivers, disputed factors, and clinical prompts behind the estimate.</p>
               </div>
-
-              {!hasPrediction ? (
-                <div className="empty-state">
-                  <h3>No prediction yet</h3>
-                  <p>Start from Patient Details and run a risk estimate before reviewing explanations.</p>
-                  <button onClick={() => goToView("case")}>Go to Patient Details</button>
-                </div>
-              ) : (
-                <>
-                  <div className="result-grid">
-                    <div className="result-card">
-                      <h3>Explanation Snapshot</h3>
-                      <p>
-                        Risk: <strong>{explainRisk}</strong>
-                      </p>
-                      <p>
-                        Status: <strong>{explainOut ? (explainOut.flagged ? "Flagged" : "Not Flagged") : "-"}</strong>
-                      </p>
-                      <p>
-                        Case: <strong>{explainOut?.case_id || activeCaseId || "-"}</strong>
-                      </p>
-                      <p>
-                        Clinician-disputed factors:{" "}
-                        <strong>
-                          {explainOut?.disputed_features?.length
-                            ? explainOut.disputed_features.map(resolveFeatureLabel).join(", ")
-                            : "-"}
-                        </strong>
-                      </p>
-                    </div>
-                    <div className="result-card">
-                      <h3>Clarifications</h3>
-                      {explainOut?.meta?.clarifications?.length ? (
-                        <ul className="clarify-list">
-                          {explainOut.meta.clarifications.map((c) => (
-                            <li key={c.feature}>
-                              <strong>{resolveFeatureLabel(c.feature)}</strong>
-                              <span>
-                                {c.desc} ({c.unit})
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="muted">No clarification items.</p>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="evidence-stack">
-                    <FeatureTable
-                      title="Factors Increasing Estimated Risk"
-                      items={explainOut?.top_positive || []}
-                      resolveFeatureLabel={resolveFeatureLabel}
-                      getClinicalPrompt={getClinicalPrompt}
-                    />
-                    <FeatureTable
-                      title="Factors Reducing Estimated Risk"
-                      items={explainOut?.top_negative || []}
-                      resolveFeatureLabel={resolveFeatureLabel}
-                      getClinicalPrompt={getClinicalPrompt}
-                    />
-                    <FeatureTable
-                      title="Clinician-Disputed Factors"
-                      items={explainOut?.hidden_contributors || []}
-                      resolveFeatureLabel={resolveFeatureLabel}
-                      getClinicalPrompt={getClinicalPrompt}
-                    />
-                  </div>
-
-                  <p className="disclaimer">
-                    {explainOut?.meta?.disclaimer ||
-                      "This tool is for screening support only and does not provide a medical diagnosis. Consult a qualified clinician for decisions."}
-                  </p>
-
-                  <button className="button-ghost" onClick={() => setShowRawJson((v) => !v)}>
-                    {showRawJson ? "Hide Technical JSON" : "Show Technical JSON"}
-                  </button>
-                  {showRawJson && (
-                    <div className="result-grid">
-                      <div className="result-card">
-                        <h3>Predict JSON</h3>
-                        <pre>{JSON.stringify(predictOut, null, 2)}</pre>
-                      </div>
-                      <div className="result-card">
-                        <h3>Explain JSON</h3>
-                        <pre>{JSON.stringify(explainOut, null, 2)}</pre>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
+              <div className="actions">
+                <button onClick={runExplain} disabled={loading || !hasPrediction}>
+                  {loading ? busyLabel || "Processing..." : "Refresh Explanation"}
+                </button>
+                <button className="button-ghost" onClick={() => goToView("feedback")} disabled={!hasPrediction}>
+                  Continue to Feedback
+                </button>
+              </div>
             </section>
+
+            {!hasPrediction ? (
+              <div className="empty-state">
+                <h3>No prediction yet</h3>
+                <p>Start from Patient Details and run a risk estimate before reviewing explanations.</p>
+                <button onClick={() => goToView("case")}>Go to Patient Details</button>
+              </div>
+            ) : (
+              <>
+                <section className="summary-strip">
+                  <StatTile label="Explained Risk" value={explainRisk} tone={tone} />
+                  <StatTile label="Status" value={explainOut ? (explainOut.flagged ? "Flagged" : "Not Flagged") : "-"} tone={tone} />
+                  <StatTile label="Case" value={explainOut?.case_id || activeCaseId || "-"} />
+                  <StatTile
+                    label="Disputed Factors"
+                    value={explainOut?.disputed_features?.length ? explainOut.disputed_features.length : "0"}
+                  />
+                </section>
+
+                <section className="data-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <h3>Clarifications</h3>
+                      <p>Field definitions returned with the explanation response.</p>
+                    </div>
+                  </div>
+                  {explainOut?.meta?.clarifications?.length ? (
+                    <ul className="clarify-list">
+                      {explainOut.meta.clarifications.map((c) => (
+                        <li key={c.feature}>
+                          <strong>{resolveFeatureLabel(c.feature)}</strong>
+                          <span>
+                            {c.desc} ({c.unit})
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="muted empty-copy">No clarification items.</p>
+                  )}
+                </section>
+
+                <div className="evidence-stack">
+                  <FeatureTable
+                    title="Factors Increasing Estimated Risk"
+                    subtitle="Positive SHAP contributors for this case."
+                    tone="high"
+                    items={explainOut?.top_positive || []}
+                    resolveFeatureLabel={resolveFeatureLabel}
+                    getClinicalPrompt={getClinicalPrompt}
+                  />
+                  <FeatureTable
+                    title="Factors Reducing Estimated Risk"
+                    subtitle="Negative SHAP contributors for this case."
+                    tone="low"
+                    items={explainOut?.top_negative || []}
+                    resolveFeatureLabel={resolveFeatureLabel}
+                    getClinicalPrompt={getClinicalPrompt}
+                  />
+                  <FeatureTable
+                    title="Clinician-Disputed Factors"
+                    subtitle="Factors retained for transparency after feedback."
+                    tone="medium"
+                    items={explainOut?.hidden_contributors || []}
+                    resolveFeatureLabel={resolveFeatureLabel}
+                    getClinicalPrompt={getClinicalPrompt}
+                  />
+                </div>
+
+                <p className="disclaimer">
+                  {explainOut?.meta?.disclaimer ||
+                    "This tool is for screening support only and does not provide a medical diagnosis. Consult a qualified clinician for decisions."}
+                </p>
+
+                <button className="button-ghost technical-toggle" onClick={() => setShowRawJson((v) => !v)}>
+                  {showRawJson ? "Hide Technical JSON" : "Show Technical JSON"}
+                </button>
+                {showRawJson && (
+                  <div className="technical-grid">
+                    <div className="data-panel">
+                      <h3>Predict JSON</h3>
+                      <pre>{JSON.stringify(predictOut, null, 2)}</pre>
+                    </div>
+                    <div className="data-panel">
+                      <h3>Explain JSON</h3>
+                      <pre>{JSON.stringify(explainOut, null, 2)}</pre>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
           </main>
         )}
 
         {activeView === "feedback" && (
           <main className="app-page">
-            <section className="page-panel">
-              <div className="page-header">
-                <div>
-                  <p className="step-label">Step 4</p>
-                  <h2>Clinician Feedback</h2>
-                  <p className="muted">Record whether the risk estimate and explanation made clinical sense.</p>
-                </div>
-                <p className="case-pill">Active Case: {activeCaseId || "-"}</p>
+            <section className="page-intro">
+              <div>
+                <p className="step-label">Step 4</p>
+                <h2>Clinician feedback</h2>
+                <p className="muted">Record whether the risk estimate and explanation made clinical sense.</p>
               </div>
+              <p className="case-pill">Active Case: {activeCaseId || "-"}</p>
+            </section>
 
-              {!hasPrediction ? (
-                <div className="empty-state">
-                  <h3>No active case</h3>
-                  <p>Run a prediction before saving clinician feedback.</p>
-                  <button onClick={() => goToView("case")}>Go to Patient Details</button>
-                </div>
-              ) : (
-                <>
+            {!hasPrediction ? (
+              <div className="empty-state">
+                <h3>No active case</h3>
+                <p>Run a prediction before saving clinician feedback.</p>
+                <button onClick={() => goToView("case")}>Go to Patient Details</button>
+              </div>
+            ) : (
+              <>
+                <section className="data-panel feedback-composer">
+                  <div className="panel-heading">
+                    <div>
+                      <h3>Case review input</h3>
+                      <p>Choose a quick response, then refine the related factor and note.</p>
+                    </div>
+                  </div>
                   <div className="quick-feedback">
                     <button
-                      className="button-ghost"
+                      className={feedbackType === "relevant" ? "quick-choice active" : "quick-choice"}
                       onClick={() => chooseFeedback("relevant", "This selected factor supports the prediction.")}
                     >
-                      This prediction seems reasonable
+                      <strong>Reasonable</strong>
+                      <span>This selected factor supports the prediction.</span>
                     </button>
                     <button
-                      className="button-ghost"
+                      className={feedbackType === "irrelevant" ? "quick-choice active" : "quick-choice"}
                       onClick={() => chooseFeedback("irrelevant", "I disagree with this factor for this case.")}
                     >
-                      I disagree with this prediction
+                      <strong>Disagree</strong>
+                      <span>I disagree with this factor for this case.</span>
                     </button>
                     <button
-                      className="button-ghost"
-                      onClick={() => chooseFeedback("irrelevant", "This factor is not clinically relevant here.")}
-                    >
-                      This factor is not clinically relevant here
-                    </button>
-                    <button
-                      className="button-ghost"
+                      className={feedbackType === "confusing" ? "quick-choice active" : "quick-choice"}
                       onClick={() => chooseFeedback("confusing", "This explanation is confusing.")}
                     >
-                      This explanation is confusing
+                      <strong>Confusing</strong>
+                      <span>This explanation is confusing.</span>
                     </button>
                   </div>
 
                   <div className="grid-3">
-                    <label>
-                      Feedback choice
+                    <label className="field-control">
+                      <span className="label-title">Feedback choice</span>
                       <select value={feedbackType} onChange={(e) => setFeedbackType(e.target.value)}>
                         {Object.entries(FEEDBACK_LABELS).map(([value, label]) => (
                           <option key={value} value={value}>
@@ -879,8 +943,8 @@ export default function App() {
                         ))}
                       </select>
                     </label>
-                    <label>
-                      Related factor
+                    <label className="field-control">
+                      <span className="label-title">Related factor</span>
                       <select
                         value={feedbackNeedsFeature ? feedbackFeature : ""}
                         onChange={(e) => setFeedbackFeature(e.target.value)}
@@ -894,89 +958,104 @@ export default function App() {
                         ))}
                       </select>
                     </label>
-                    <label>
-                      Clinical note
+                    <label className="field-control">
+                      <span className="label-title">Clinical note</span>
                       <input value={feedbackMessage} onChange={(e) => setFeedbackMessage(e.target.value)} />
                     </label>
                   </div>
 
                   <div className="actions">
                     <button onClick={saveFeedback} disabled={loading}>
-                      Save Clinician Feedback
+                      {loading ? busyLabel || "Saving..." : "Save Clinician Feedback"}
                     </button>
                     <button className="button-ghost" onClick={() => goToView("explanation")}>
                       Review Explanation Again
                     </button>
                   </div>
+                  {notice && <p className="notice">{notice}</p>}
+                  {error && <p className="error">{error}</p>}
+                </section>
 
-                  <div className="result-grid">
-                    <div className="result-card">
-                      <h3>Feedback Summary</h3>
-                      {!hasSession ? (
-                        <p className="muted">Enter an ID and refresh the explanation profile.</p>
-                      ) : analyticsOut?.summary?.length ? (
-                        <ul className="summary-list">
-                          {analyticsOut.summary.map((s) => (
-                            <li key={s.feedback_type}>
-                              <span>{FEEDBACK_LABELS[s.feedback_type] || s.feedback_type}</span>
-                              <strong>{s.count}</strong>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="muted">No feedback has been recorded yet.</p>
-                      )}
+                <section className="insight-grid">
+                  <div className="data-panel">
+                    <div className="panel-heading">
+                      <div>
+                        <h3>Feedback Summary</h3>
+                        <p>Saved responses for this clinical profile.</p>
+                      </div>
                     </div>
-                    <div className="result-card">
-                      <h3>Factors Clinicians Marked as Minimal Influence</h3>
-                      {topFeaturesOut.length ? (
-                        <ul className="summary-list">
-                          {topFeaturesOut.map((f) => (
-                            <li key={f.feature}>
-                              <span>{resolveFeatureLabel(f.feature)}</span>
-                              <strong>{f.count}</strong>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="muted">No factor-level feedback yet.</p>
-                      )}
+                    {analyticsOut?.summary?.length ? (
+                      <ul className="summary-list">
+                        {analyticsOut.summary.map((s) => (
+                          <li key={s.feedback_type}>
+                            <span>{FEEDBACK_LABELS[s.feedback_type] || s.feedback_type}</span>
+                            <strong>{s.count}</strong>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="muted empty-copy">No feedback has been recorded yet.</p>
+                    )}
+                  </div>
+                  <div className="data-panel">
+                    <div className="panel-heading">
+                      <div>
+                        <h3>Minimal Influence Factors</h3>
+                        <p>Factors clinicians marked as less relevant.</p>
+                      </div>
+                    </div>
+                    {topFeaturesOut.length ? (
+                      <ul className="summary-list">
+                        {topFeaturesOut.map((f) => (
+                          <li key={f.feature}>
+                            <span>{resolveFeatureLabel(f.feature)}</span>
+                            <strong>{f.count}</strong>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="muted empty-copy">No factor-level feedback yet.</p>
+                    )}
+                  </div>
+                </section>
+
+                <section className="data-panel preference-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <h3>Explanation Preference</h3>
+                      <p>Adjust the future explanation length for this Clinical ID.</p>
                     </div>
                   </div>
-
-                  <div className="preference-panel">
-                    <h3>Explanation Preference</h3>
-                    <div className="grid-2">
-                      <label>
-                        Number of factors to show
-                        <input
-                          type="number"
-                          value={prefsOut?.top_k ?? 8}
-                          onChange={(e) =>
-                            setPrefsOut((prev) => ({ ...(prev || {}), top_k: Number(e.target.value) }))
-                          }
-                        />
-                      </label>
-                      <label>
-                        Explanation detail
-                        <select
-                          value={prefsOut?.style ?? "simple"}
-                          onChange={(e) =>
-                            setPrefsOut((prev) => ({ ...(prev || {}), style: e.target.value }))
-                          }
-                        >
-                          <option value="simple">Brief</option>
-                          <option value="detailed">Detailed</option>
-                        </select>
-                      </label>
-                    </div>
-                    <button onClick={savePreferences} disabled={loading || !hasSession}>
-                      Save Explanation Preference
-                    </button>
+                  <div className="grid-2">
+                    <label className="field-control">
+                      <span className="label-title">Number of factors to show</span>
+                      <input
+                        type="number"
+                        value={prefsOut?.top_k ?? 8}
+                        onChange={(e) =>
+                          setPrefsOut((prev) => ({ ...(prev || {}), top_k: Number(e.target.value) }))
+                        }
+                      />
+                    </label>
+                    <label className="field-control">
+                      <span className="label-title">Explanation detail</span>
+                      <select
+                        value={prefsOut?.style ?? "simple"}
+                        onChange={(e) =>
+                          setPrefsOut((prev) => ({ ...(prev || {}), style: e.target.value }))
+                        }
+                      >
+                        <option value="simple">Brief</option>
+                        <option value="detailed">Detailed</option>
+                      </select>
+                    </label>
                   </div>
-                </>
-              )}
-            </section>
+                  <button onClick={savePreferences} disabled={loading || !hasSession}>
+                    Save Explanation Preference
+                  </button>
+                </section>
+              </>
+            )}
           </main>
         )}
       </div>
