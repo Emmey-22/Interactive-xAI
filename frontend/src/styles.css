@@ -152,6 +152,8 @@ p {
 }
 
 .login-form button {
+  justify-self: start;
+  width: min(180px, 100%);
   min-height: 46px;
 }
 

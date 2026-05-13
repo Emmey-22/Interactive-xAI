@@ -8,6 +8,8 @@ services:
     envVars:
       - key: ART_DIR
         value: artifacts
+      - key: PYTHON_VERSION
+        value: "3.14.3"
       - key: CORS_ORIGINS
         sync: false
       - key: AUTH_REQUIRED
