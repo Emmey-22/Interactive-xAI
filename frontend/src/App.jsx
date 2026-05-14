@@ -252,7 +252,6 @@ export default function App() {
   const latestThresholdValue = latestOut?.threshold;
   const latestFlagged = latestOut?.flagged;
   const latestCaseId = latestOut?.case_id || activeCaseId;
-  const latestModelVersion = latestOut?.model_version || explainOut?.meta?.model_version;
   const latestRisk = useMemo(() => formatRisk(latestRiskValue), [latestRiskValue]);
   const explainRisk = useMemo(() => formatRisk(explainOut?.risk), [explainOut]);
   const predictRisk = useMemo(() => formatRisk(predictOut?.risk), [predictOut]);
@@ -755,7 +754,6 @@ export default function App() {
                   <StatTile label="Prediction" value={predictRisk} tone={tone} />
                   <StatTile label="Threshold" value={typeof latestThresholdValue === "number" ? latestThresholdValue.toFixed(4) : "-"} />
                   <StatTile label="Case ID" value={latestCaseId || "-"} />
-                  <StatTile label="Model Version" value={latestModelVersion || "-"} />
                 </div>
                 {error && <p className="error">{error}</p>}
                 <div className="actions">
