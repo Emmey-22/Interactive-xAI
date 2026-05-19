@@ -215,6 +215,30 @@ function FeatureTable({ title, subtitle, items, tone = "neutral", resolveFeature
   );
 }
 
+function ExplanationSummary({ text }) {
+  if (!text) return null;
+  const paragraphs = String(text)
+    .split(/\n+/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+
+  return (
+    <section className="data-panel explanation-summary">
+      <div className="panel-heading">
+        <div>
+          <h3>Detailed explanation summary</h3>
+          <p>Expanded narrative based on the saved explanation preference.</p>
+        </div>
+      </div>
+      <div className="narrative-copy">
+        {paragraphs.map((paragraph, idx) => (
+          <p key={idx}>{paragraph}</p>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function viewFromHash() {
   if (typeof window === "undefined") return "login";
   const value = window.location.hash.replace(/^#\/?/, "");
@@ -827,6 +851,8 @@ export default function App() {
                     <p className="muted empty-copy">No clarification items.</p>
                   )}
                 </section>
+
+                <ExplanationSummary text={explainOut?.meta?.explanation_summary} />
 
                 <div className="evidence-stack">
                   <FeatureTable

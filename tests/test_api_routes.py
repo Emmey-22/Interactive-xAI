@@ -125,6 +125,60 @@ def test_feedback_prefer_short_updates_preferences(client):
     assert prefs["top_k"] == 3
     assert prefs["style"] == "simple"
 
+def test_feedback_prefer_long_updates_preferences(client):
+    resp = client.post(
+        "/feedback",
+        json={
+            "user_id": "detail_pref_user",
+            "feedback_type": "prefer_long",
+            "message": "show more detail",
+        },
+    )
+    assert resp.status_code == 200
+    pref_resp = client.get("/preferences?user_id=detail_pref_user")
+    assert pref_resp.status_code == 200
+    prefs = pref_resp.json()
+    assert prefs["top_k"] == 10
+    assert prefs["style"] == "detailed"
+
+def test_explain_detailed_preference_returns_narrative_summary(client):
+    user_id = "detail_explain_user"
+    case_id = "case_detail_preference"
+
+    simple_pref = client.post(
+        "/preferences",
+        json={"user_id": user_id, "top_k": 3, "style": "simple"},
+    )
+    assert simple_pref.status_code == 200
+    simple_resp = client.post(f"/explain?user_id={user_id}&case_id={case_id}", json=sample_patient())
+    assert simple_resp.status_code == 200
+    simple_body = simple_resp.json()
+    assert simple_body["meta"]["style"] == "simple"
+    assert "explanation_summary" not in simple_body["meta"]
+
+    long_feedback = client.post(
+        "/feedback",
+        json={
+            "user_id": user_id,
+            "feedback_type": "prefer_long",
+            "message": "show more detail",
+        },
+    )
+    assert long_feedback.status_code == 200
+    detailed_resp = client.post(f"/explain?user_id={user_id}&case_id={case_id}", json=sample_patient())
+    assert detailed_resp.status_code == 200
+    detailed_body = detailed_resp.json()
+    summary = detailed_body["meta"].get("explanation_summary", "")
+
+    assert detailed_body["meta"]["style"] == "detailed"
+    assert isinstance(summary, str)
+    assert len(summary) > 100
+    assert "ten-year CHD risk" in summary
+    assert "main factors increasing" in summary
+    assert "main factors reducing" in summary
+    assert len(detailed_body["top_positive"]) >= len(simple_body["top_positive"])
+    assert len(detailed_body["top_negative"]) >= len(simple_body["top_negative"])
+
 def test_feedback_rejects_missing_feature_for_irrelevant(client):
     resp = client.post(
         "/feedback",

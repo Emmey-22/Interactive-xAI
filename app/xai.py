@@ -124,6 +124,61 @@ def _pack(df, disputed_features=None):
         for _, r in df.iterrows()
     ]
 
+def _feature_description(feature_name):
+    info = FEATURE_GLOSSARY.get(feature_name)
+    return info["desc"] if info else "Model input feature."
+
+
+def _format_factor_summary(df, limit=3):
+    factors = []
+    for _, row in df.head(limit).iterrows():
+        feature = row["feature"]
+        description = _feature_description(feature).rstrip(".")
+        value = row["value"]
+        shap_value = float(row["shap"])
+        factors.append(
+            f"{feature} ({description}; value {value}; SHAP {shap_value:+.4f})"
+        )
+    return "; ".join(factors) if factors else "no strong contributors in this direction"
+
+
+def _build_detailed_summary(risk, threshold, flagged, top_pos, top_neg, disputed, confusing):
+    risk_pct = risk * 100
+    threshold_pct = threshold * 100
+    status = "above" if flagged else "below"
+    action = "flagged for follow-up review" if flagged else "not flagged by the screening threshold"
+    increasing = _format_factor_summary(top_pos)
+    reducing = _format_factor_summary(top_neg)
+
+    feedback_notes = []
+    if disputed:
+        feedback_notes.append(
+            "Clinician-disputed factors are retained in the explanation for transparency: "
+            + ", ".join(disputed)
+            + "."
+        )
+    if confusing:
+        feedback_notes.append(
+            "Factors previously marked as confusing have clarification support available: "
+            + ", ".join(confusing)
+            + "."
+        )
+    feedback_text = (
+        " ".join(feedback_notes)
+        if feedback_notes
+        else "No case-specific disputed or confusing factors are currently attached to this explanation."
+    )
+
+    return (
+        f"The calibrated screening model estimates a ten-year CHD risk of {risk_pct:.2f}%, "
+        f"which is {status} the screening threshold of {threshold_pct:.2f}%; this case is {action}. "
+        "Because the system is operating in screening mode, the threshold prioritizes sensitivity "
+        "and should be interpreted as decision support rather than diagnosis.\n\n"
+        f"The main factors increasing the estimated risk are {increasing}. "
+        f"The main factors reducing the estimated risk are {reducing}.\n\n"
+        f"{feedback_text}"
+    )
+
 def predict(patient_dict):
     x = _to_df(patient_dict)
     x_p = _prep.transform(x)
@@ -189,6 +244,16 @@ def explain(patient_dict, user_id=None, case_id=None):
         "clarifications": clarifications,
         "disclaimer": "This tool is for screening support only and does not provide a medical diagnosis. Consult a qualified clinician for decisions."
     }
+    if style == "detailed":
+        meta["explanation_summary"] = _build_detailed_summary(
+            risk,
+            thr,
+            flagged,
+            top_pos,
+            top_neg,
+            disputed,
+            confusing,
+        )
 
     return {
         "risk": risk,

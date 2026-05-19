@@ -1044,6 +1044,20 @@ td {
   margin-top: 4px;
 }
 
+.explanation-summary {
+  margin-top: 14px;
+}
+
+.narrative-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.narrative-copy p {
+  margin-bottom: 0;
+  color: var(--ink-soft);
+}
+
 .disclaimer {
   border-left: 3px solid var(--brand);
   border-radius: 8px;
